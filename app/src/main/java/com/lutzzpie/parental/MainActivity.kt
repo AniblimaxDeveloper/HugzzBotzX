@@ -6,6 +6,9 @@ import android.app.AppOpsManager
 import android.app.usage.UsageStatsManager
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.hardware.camera2.CameraAccessException
+import android.hardware.camera2.CameraManager
 import android.location.LocationManager
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
@@ -36,6 +39,9 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import java.util.Calendar
 
 class MainActivity : ComponentActivity() {
@@ -51,69 +57,77 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun PremiumParentalUI() {
     val ctx = LocalContext.current
+    val scope = rememberCoroutineScope()
     
-    // State Variables
+    // State Sistem
     var battery by remember { mutableStateOf("...") }
     var storage by remember { mutableStateOf("...") }
     var network by remember { mutableStateOf("...") }
-    var deviceInfo by remember { mutableStateOf("...") }
-    var locationText by remember { mutableStateOf("Belum dilacak") }
-    var usageText by remember { mutableStateOf("Butuh izin akses") }
-    var appCount by remember { mutableStateOf("...") }
+    var usageText by remember { mutableStateOf("...") }
 
-    // --- LOGIKA SISTEM ---
+    // State Flash
+    var isFlashOn by remember { mutableStateOf(false) }
+    var isStrobing by remember { mutableStateOf(false) }
+
+    // Fungsi Hardware Flash
+    fun setFlashlight(on: Boolean) {
+        val cameraManager = ctx.getSystemService(Context.CAMERA_SERVICE) as CameraManager
+        try {
+            val cameraId = cameraManager.cameraIdList[0]
+            cameraManager.setTorchMode(cameraId, on)
+            isFlashOn = on
+        } catch (e: CameraAccessException) {
+            Toast.makeText(ctx, "Kamera/Flash tidak tersedia", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    // Fungsi Strobe (Kedap-kedip)
+    fun startStrobe() {
+        if (!ContextCompat.checkSelfPermission(ctx, Manifest.permission.CAMERA).equals(PackageManager.PERMISSION_GRANTED)) {
+            Toast.makeText(ctx, "Izin kamera dibutuhkan untuk senter!", Toast.LENGTH_SHORT).show()
+            return
+        }
+        isStrobing = true
+        scope.launch {
+            while (isStrobing) {
+                setFlashlight(true)
+                delay(100) // Nyala 100ms
+                setFlashlight(false)
+                delay(100) // Mati 100ms
+            }
+        }
+    }
+
+    fun stopStrobe() {
+        isStrobing = false
+        setFlashlight(false)
+    }
+
+    // Fungsi update data
     fun updateAllData() {
-        // 1. Baterai
         val bm = ctx.getSystemService(Context.BATTERY_SERVICE) as BatteryManager
         battery = "${bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)}%"
-
-        // 2. Storage
+        
         val stat = StatFs(Environment.getDataDirectory().path)
-        val freeBytes = stat.availableBytes
-        val totalBytes = stat.totalBytes
-        val freeGB = String.format("%.1f", freeBytes / (1024.0 * 1024.0 * 1024.0))
-        val totalGB = String.format("%.1f", totalBytes / (1024.0 * 1024.0 * 1024.0))
-        storage = "$freeGB GB / $totalGB GB"
+        storage = "${String.format("%.1f", stat.availableBytes / (1024.0 * 1024.0 * 1024.0))} GB Free"
 
-        // 3. Network
         val cm = ctx.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
-        val activeNetwork = cm.activeNetwork
-        val caps = cm.getNetworkCapabilities(activeNetwork)
-        network = if (caps != null && caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) "WiFi Aktif" else "Data Seluler"
+        val caps = cm.getNetworkCapabilities(cm.activeNetwork)
+        network = if (caps != null && caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) "WiFi" else "Data Seluler"
 
-        // 4. Device Info
-        deviceInfo = "${Build.MANUFACTURER} ${Build.MODEL} (Android ${Build.VERSION.RELEASE})"
-
-        // 5. App Count (Persiapan App Blocker)
-        appCount = "${ctx.packageManager.getInstalledPackages(0).size} Aplikasi"
-
-        // 6. Screen Time
         val appOps = ctx.getSystemService(Context.APP_OPS_SERVICE) as AppOpsManager
         val mode = appOps.checkOpNoThrow(AppOpsManager.OPSTR_GET_USAGE_STATS, Process.myUid(), ctx.packageName)
         if (mode == AppOpsManager.MODE_ALLOWED) {
             val usm = ctx.getSystemService(Context.USAGE_STATS_SERVICE) as UsageStatsManager
             val calendar = Calendar.getInstance().apply { set(Calendar.HOUR_OF_DAY, 0); set(Calendar.MINUTE, 0); set(Calendar.SECOND, 0) }
             val stats = usm.queryUsageStats(UsageStatsManager.INTERVAL_DAILY, calendar.timeInMillis, System.currentTimeMillis())
-            if (stats != null && stats.isNotEmpty()) {
-                usageText = "${stats.sumOf { it.totalTimeInForeground } / 1000 / 60} Menit hari ini"
-            }
+            if (stats != null && stats.isNotEmpty()) usageText = "${stats.sumOf { it.totalTimeInForeground } / 1000 / 60} Menit"
         } else usageText = "Izin Ditolak"
-    }
-
-    // --- IZIN LOKASI ---
-    val locationPermissionLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.RequestMultiplePermissions()
-    ) { permissions ->
-        if (permissions[Manifest.permission.ACCESS_FINE_LOCATION] == true) {
-            val lm = ctx.getSystemService(Context.LOCATION_SERVICE) as LocationManager
-            val loc = lm.getLastKnownLocation(LocationManager.GPS_PROVIDER) ?: lm.getLastKnownLocation(LocationManager.NETWORK_PROVIDER)
-            if (loc != null) locationText = "Lat: ${loc.latitude}\nLng: ${loc.longitude}" else locationText = "GPS tidak aktif"
-        } else Toast.makeText(ctx, "Izin lokasi ditolak", Toast.LENGTH_SHORT).show()
     }
 
     LaunchedEffect(Unit) { updateAllData() }
 
-    // --- UI DASHBOARD ---
+    // --- UI TAMPILAN ---
     Box(modifier = Modifier.fillMaxSize().background(
         Brush.verticalGradient(listOf(Color(0xFF0F0C29), Color(0xFF24243E)))
     )) {
@@ -124,45 +138,60 @@ fun PremiumParentalUI() {
             Spacer(Modifier.height(30.dp))
             Text("HugzzBotzX", color = Color.White, fontSize = 36.sp, fontWeight = FontWeight.Black)
             Text("Live System Controller", color = Color(0xFF00CEC9), fontSize = 14.sp, fontWeight = FontWeight.Bold)
-            Spacer(Modifier.height(24.dp))
+            Spacer(Modifier.height(20.dp))
 
-            // PANEL 1: DEVICE STATUS
+            // PANEL 1: FLASH CONTROLLER
             Card(colors = CardDefaults.cardColors(containerColor = Color.White.copy(alpha = 0.08f)), modifier = Modifier.fillMaxWidth()) {
-                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Text("Device Status", color = Color.White, fontWeight = FontWeight.Bold)
-                    StatusRow("Device", deviceInfo)
-                    StatusRow("Baterai", battery)
-                    StatusRow("Storage", storage)
-                    StatusRow("Jaringan", network)
-                    StatusRow("Total Apps", appCount)
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text("Flash & Strobe Control", color = Color.White, fontWeight = FontWeight.Bold)
+                    Text(if (isFlashOn) "Status: NYALA" else "Status: MATI", color = if (isFlashOn) Color.Green else Color.LightGray, fontSize = 12.sp)
+                    
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Button(
+                            onClick = { 
+                                if (isStrobing) stopStrobe() else { setFlashlight(true); isStrobing = false } 
+                            },
+                            modifier = Modifier.weight(1f), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFDCB6E))
+                        ) { Text("Flash ON", color = Color.Black, fontSize = 12.sp) }
+
+                        Button(
+                            onClick = { 
+                                if (!isStrobing) stopStrobe() 
+                            },
+                            modifier = Modifier.weight(1f), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF636E72))
+                        ) { Text("Flash OFF", fontSize = 12.sp) }
+                    }
+
+                    Button(
+                        onClick = { 
+                            if (isStrobing) { stopStrobe(); Toast.makeText(ctx, "Strobe Dihentikan", Toast.LENGTH_SHORT).show() } 
+                            else { startStrobe(); Toast.makeText(ctx, "Strobe Dimulai!", Toast.LENGTH_SHORT).show() } 
+                        },
+                        modifier = Modifier.fillMaxWidth(), colors = ButtonDefaults.buttonColors(containerColor = if (isStrobing) Color(0xFFD63031) else Color(0xFF6C5CE7))
+                    ) { Text(if (isStrobing) "STOP STROBE" else "MULAI KEDAP-KEDIP (STROBE)") }
                 }
             }
 
             Spacer(Modifier.height(16.dp))
 
-            // PANEL 2: PARENTAL CONTROL
+            // PANEL 2: SYSTEM STATUS
             Card(colors = CardDefaults.cardColors(containerColor = Color.White.copy(alpha = 0.08f)), modifier = Modifier.fillMaxWidth()) {
-                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Text("Parental Control", color = Color.White, fontWeight = FontWeight.Bold)
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("System Status", color = Color.White, fontWeight = FontWeight.Bold)
+                    StatusRow("Baterai", battery)
+                    StatusRow("Storage", storage)
+                    StatusRow("Jaringan", network)
                     StatusRow("Screen Time", usageText)
                     if (usageText == "Izin Ditolak") {
                         Button(onClick = { ctx.startActivity(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS)) },
-                            modifier = Modifier.fillMaxWidth(), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF6C5CE7))) {
-                            Text("Izinkan Pemantauan", fontSize = 12.sp)
+                            modifier = Modifier.fillMaxWidth().height(35.dp), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF6C5CE7))) {
+                            Text("Izinkan Pemantauan", fontSize = 10.sp)
                         }
                     }
-                    StatusRow("Lokasi GPS", locationText)
                 }
             }
 
             Spacer(Modifier.height(24.dp))
-
-            // TOMBOL AKSI
-            Button(onClick = { locationPermissionLauncher.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION)) },
-                modifier = Modifier.fillMaxWidth().height(50.dp), shape = RoundedCornerShape(12.dp), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00B894))) {
-                Text("Update Lokasi GPS")
-            }
-            Spacer(Modifier.height(8.dp))
             Button(onClick = { updateAllData(); Toast.makeText(ctx, "Data di-refresh!", Toast.LENGTH_SHORT).show() },
                 modifier = Modifier.fillMaxWidth().height(50.dp), shape = RoundedCornerShape(12.dp), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0984E3))) {
                 Text("Refresh System Data")
@@ -172,12 +201,11 @@ fun PremiumParentalUI() {
     }
 }
 
-// Komponen UI untuk baris data agar rapi
 @Composable
 fun StatusRow(label: String, value: String) {
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
         Text(label, color = Color.LightGray, fontSize = 14.sp)
-        Text(value, color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, textAlign = androidx.compose.ui.text.style.TextAlign.End)
+        Text(value, color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
     }
     HorizontalDivider(color = Color.White.copy(alpha = 0.05f))
 }
