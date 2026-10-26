@@ -7,9 +7,14 @@ import android.app.usage.UsageStatsManager
 import android.content.Context
 import android.content.Intent
 import android.location.LocationManager
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.os.BatteryManager
+import android.os.Build
 import android.os.Bundle
+import android.os.Environment
 import android.os.Process
+import android.os.StatFs
 import android.provider.Settings
 import android.widget.Toast
 import androidx.activity.ComponentActivity
@@ -46,58 +51,69 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun PremiumParentalUI() {
     val ctx = LocalContext.current
-    var batteryText by remember { mutableStateOf("Membaca...") }
+    
+    // State Variables
+    var battery by remember { mutableStateOf("...") }
+    var storage by remember { mutableStateOf("...") }
+    var network by remember { mutableStateOf("...") }
+    var deviceInfo by remember { mutableStateOf("...") }
     var locationText by remember { mutableStateOf("Belum dilacak") }
-    var usageText by remember { mutableStateOf("Butuh izin akses penggunaan") }
+    var usageText by remember { mutableStateOf("Butuh izin akses") }
+    var appCount by remember { mutableStateOf("...") }
 
-    // --- FUNGSI BATERAI ---
-    fun getBattery() {
+    // --- LOGIKA SISTEM ---
+    fun updateAllData() {
+        // 1. Baterai
         val bm = ctx.getSystemService(Context.BATTERY_SERVICE) as BatteryManager
-        val level = bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
-        batteryText = "$level%"
+        battery = "${bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)}%"
+
+        // 2. Storage
+        val stat = StatFs(Environment.getDataDirectory().path)
+        val freeBytes = stat.availableBytes
+        val totalBytes = stat.totalBytes
+        val freeGB = String.format("%.1f", freeBytes / (1024.0 * 1024.0 * 1024.0))
+        val totalGB = String.format("%.1f", totalBytes / (1024.0 * 1024.0 * 1024.0))
+        storage = "$freeGB GB / $totalGB GB"
+
+        // 3. Network
+        val cm = ctx.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        val activeNetwork = cm.activeNetwork
+        val caps = cm.getNetworkCapabilities(activeNetwork)
+        network = if (caps != null && caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) "WiFi Aktif" else "Data Seluler"
+
+        // 4. Device Info
+        deviceInfo = "${Build.MANUFACTURER} ${Build.MODEL} (Android ${Build.VERSION.RELEASE})"
+
+        // 5. App Count (Persiapan App Blocker)
+        appCount = "${ctx.packageManager.getInstalledPackages(0).size} Aplikasi"
+
+        // 6. Screen Time
+        val appOps = ctx.getSystemService(Context.APP_OPS_SERVICE) as AppOpsManager
+        val mode = appOps.checkOpNoThrow(AppOpsManager.OPSTR_GET_USAGE_STATS, Process.myUid(), ctx.packageName)
+        if (mode == AppOpsManager.MODE_ALLOWED) {
+            val usm = ctx.getSystemService(Context.USAGE_STATS_SERVICE) as UsageStatsManager
+            val calendar = Calendar.getInstance().apply { set(Calendar.HOUR_OF_DAY, 0); set(Calendar.MINUTE, 0); set(Calendar.SECOND, 0) }
+            val stats = usm.queryUsageStats(UsageStatsManager.INTERVAL_DAILY, calendar.timeInMillis, System.currentTimeMillis())
+            if (stats != null && stats.isNotEmpty()) {
+                usageText = "${stats.sumOf { it.totalTimeInForeground } / 1000 / 60} Menit hari ini"
+            }
+        } else usageText = "Izin Ditolak"
     }
 
-    // --- FUNGSI LOKASI ---
+    // --- IZIN LOKASI ---
     val locationPermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { permissions ->
         if (permissions[Manifest.permission.ACCESS_FINE_LOCATION] == true) {
             val lm = ctx.getSystemService(Context.LOCATION_SERVICE) as LocationManager
-            val loc = lm.getLastKnownLocation(LocationManager.GPS_PROVIDER) 
-                ?: lm.getLastKnownLocation(LocationManager.NETWORK_PROVIDER)
-            if (loc != null) locationText = "Lat: ${loc.latitude}\nLng: ${loc.longitude}"
-            else locationText = "GPS mati / Lokasi tidak ditemukan"
-        } else Toast.makeText(ctx, "Izin lokasi ditolak!", Toast.LENGTH_SHORT).show()
+            val loc = lm.getLastKnownLocation(LocationManager.GPS_PROVIDER) ?: lm.getLastKnownLocation(LocationManager.NETWORK_PROVIDER)
+            if (loc != null) locationText = "Lat: ${loc.latitude}\nLng: ${loc.longitude}" else locationText = "GPS tidak aktif"
+        } else Toast.makeText(ctx, "Izin lokasi ditolak", Toast.LENGTH_SHORT).show()
     }
 
-    // --- FUNGSI SCREEN TIME (USAGE STATS) ---
-    fun checkUsagePermissionAndLoad() {
-        val appOps = ctx.getSystemService(Context.APP_OPS_SERVICE) as AppOpsManager
-        val mode = appOps.checkOpNoThrow(AppOpsManager.OPSTR_GET_USAGE_STATS, Process.myUid(), ctx.packageName)
-        if (mode == AppOpsManager.MODE_ALLOWED) {
-            val usm = ctx.getSystemService(Context.USAGE_STATS_SERVICE) as UsageStatsManager
-            val calendar = Calendar.getInstance()
-            calendar.set(Calendar.HOUR_OF_DAY, 0); calendar.set(Calendar.MINUTE, 0); calendar.set(Calendar.SECOND, 0)
-            val start = calendar.timeInMillis
-            val end = System.currentTimeMillis()
-            val stats = usm.queryUsageStats(UsageStatsManager.INTERVAL_DAILY, start, end)
-            
-            if (stats != null && stats.isNotEmpty()) {
-                val totalTime = stats.sumOf { it.totalTimeInForeground } / 1000 / 60 // Konversi ke Menit
-                usageText = "$totalTime Menit hari ini"
-            } else usageText = "Data tidak ditemukan"
-        } else {
-            usageText = "Izin Ditolak. Ketuk untuk buka Setelan."
-        }
-    }
+    LaunchedEffect(Unit) { updateAllData() }
 
-    // Jalankan saat pertama dibuka
-    LaunchedEffect(Unit) {
-        getBattery()
-        checkUsagePermissionAndLoad()
-    }
-
-    // --- UI TAMPILAN ---
+    // --- UI DASHBOARD ---
     Box(modifier = Modifier.fillMaxSize().background(
         Brush.verticalGradient(listOf(Color(0xFF0F0C29), Color(0xFF24243E)))
     )) {
@@ -105,73 +121,63 @@ fun PremiumParentalUI() {
             modifier = Modifier.fillMaxSize().padding(20.dp).verticalScroll(rememberScrollState()),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            Spacer(Modifier.height(40.dp))
+            Spacer(Modifier.height(30.dp))
             Text("HugzzBotzX", color = Color.White, fontSize = 36.sp, fontWeight = FontWeight.Black)
-            Text("Premium Parental Control", color = Color(0xFF00CEC9), fontSize = 14.sp, fontWeight = FontWeight.Bold)
+            Text("Live System Controller", color = Color(0xFF00CEC9), fontSize = 14.sp, fontWeight = FontWeight.Bold)
             Spacer(Modifier.height(24.dp))
 
-            // PANEL DASHBOARD
-            Card(
-                colors = CardDefaults.cardColors(containerColor = Color.White.copy(alpha = 0.08f)),
-                shape = RoundedCornerShape(20.dp),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Column(modifier = Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Text("System Dashboard", color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
-                    
-                    // BATERAI
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                        Text("Baterai", color = Color.LightGray)
-                        Text(batteryText, color = Color(0xFF00B894), fontWeight = FontWeight.Bold)
-                    }
-                    HorizontalDivider(color = Color.White.copy(alpha = 0.1f))
-                    
-                    // SCREEN TIME
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                        Text("Screen Time", color = Color.LightGray)
-                        Text(usageText, color = Color(0xFF6C5CE7), fontWeight = FontWeight.Bold, fontSize = 12.sp)
-                    }
-                    if (usageText.contains("Izin Ditolak")) {
-                        Button(onClick = { 
-                            ctx.startActivity(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS)) 
-                        }, modifier = Modifier.fillMaxWidth().height(40.dp), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF6C5CE7))) {
-                            Text("Buka Izin Penggunaan", fontSize = 12.sp)
-                        }
-                    }
-                    HorizontalDivider(color = Color.White.copy(alpha = 0.1f))
-
-                    // LOKASI GPS
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                        Text("Lokasi GPS", color = Color.LightGray)
-                        Text(locationText, color = Color(0xFFD63031), fontWeight = FontWeight.Bold, fontSize = 12.sp, textAlign = androidx.compose.ui.text.style.TextAlign.End)
-                    }
+            // PANEL 1: DEVICE STATUS
+            Card(colors = CardDefaults.cardColors(containerColor = Color.White.copy(alpha = 0.08f)), modifier = Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text("Device Status", color = Color.White, fontWeight = FontWeight.Bold)
+                    StatusRow("Device", deviceInfo)
+                    StatusRow("Baterai", battery)
+                    StatusRow("Storage", storage)
+                    StatusRow("Jaringan", network)
+                    StatusRow("Total Apps", appCount)
                 }
             }
 
             Spacer(Modifier.height(16.dp))
 
+            // PANEL 2: PARENTAL CONTROL
+            Card(colors = CardDefaults.cardColors(containerColor = Color.White.copy(alpha = 0.08f)), modifier = Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text("Parental Control", color = Color.White, fontWeight = FontWeight.Bold)
+                    StatusRow("Screen Time", usageText)
+                    if (usageText == "Izin Ditolak") {
+                        Button(onClick = { ctx.startActivity(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS)) },
+                            modifier = Modifier.fillMaxWidth(), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF6C5CE7))) {
+                            Text("Izinkan Pemantauan", fontSize = 12.sp)
+                        }
+                    }
+                    StatusRow("Lokasi GPS", locationText)
+                }
+            }
+
+            Spacer(Modifier.height(24.dp))
+
             // TOMBOL AKSI
-            Button(
-                onClick = { locationPermissionLauncher.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION)) },
-                modifier = Modifier.fillMaxWidth().height(56.dp),
-                shape = RoundedCornerShape(16.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00B894))
-            ) { Text("Lacak Lokasi Sekarang") }
-
+            Button(onClick = { locationPermissionLauncher.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION)) },
+                modifier = Modifier.fillMaxWidth().height(50.dp), shape = RoundedCornerShape(12.dp), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00B894))) {
+                Text("Update Lokasi GPS")
+            }
             Spacer(Modifier.height(8.dp))
-
-            Button(
-                onClick = { 
-                    getBattery()
-                    checkUsagePermissionAndLoad()
-                    Toast.makeText(ctx, "Data diperbarui!", Toast.LENGTH_SHORT).show()
-                },
-                modifier = Modifier.fillMaxWidth().height(56.dp),
-                shape = RoundedCornerShape(16.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0984E3))
-            ) { Text("Refresh Data Sistem") }
-            
+            Button(onClick = { updateAllData(); Toast.makeText(ctx, "Data di-refresh!", Toast.LENGTH_SHORT).show() },
+                modifier = Modifier.fillMaxWidth().height(50.dp), shape = RoundedCornerShape(12.dp), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0984E3))) {
+                Text("Refresh System Data")
+            }
             Spacer(Modifier.height(40.dp))
         }
     }
+}
+
+// Komponen UI untuk baris data agar rapi
+@Composable
+fun StatusRow(label: String, value: String) {
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+        Text(label, color = Color.LightGray, fontSize = 14.sp)
+        Text(value, color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, textAlign = androidx.compose.ui.text.style.TextAlign.End)
+    }
+    HorizontalDivider(color = Color.White.copy(alpha = 0.05f))
 }
