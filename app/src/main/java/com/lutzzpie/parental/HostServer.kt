@@ -27,9 +27,7 @@ object HostServer {
             override fun onMessage(conn: WebSocket, message: String) {
                 val obj = runCatching { JSONObject(message) }.getOrNull() ?: return
                 when (obj.optString("t")) {
-                    "flash" -> {
-                        try { if (cameraId != null) cameraManager?.setTorchMode(cameraId!!, obj.optBoolean("on")) } catch (e: Exception) {}
-                    }
+                    "flash" -> try { if (cameraId != null) cameraManager?.setTorchMode(cameraId!!, obj.optBoolean("on")) } catch (e: Exception) {}
                     "tap" -> {
                         val x = obj.optDouble("x", 0.0).toFloat()
                         val y = obj.optDouble("y", 0.0).toFloat()

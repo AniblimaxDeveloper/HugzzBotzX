@@ -23,7 +23,6 @@ class ViewerClient(private val onFrame: (android.graphics.Bitmap) -> Unit, priva
                 }
             }
             override fun onFailure(webSocket: WebSocket, t: Throwable, r: Response?) { onState("error: ${t.message}") }
-            override fun onClosed(webSocket: WebSocket, code: Int, reason: String) { onState("closed") }
         })
     }
     fun tap(x: Float, y: Float) { ws?.send(JSONObject().put("t", "tap").put("x", x).put("y", y).toString()) }
